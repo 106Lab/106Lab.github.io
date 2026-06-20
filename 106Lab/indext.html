@@ -1,0 +1,467 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            // Bỏ qua các lỗi do trình duyệt/in-app webview tự động inject script (như zaloJSV2)
+            if (message && (message.indexOf('zaloJSV2') !== -1 || message.indexOf('zalo') !== -1)) {
+                return true;
+            }
+            const errDiv = document.createElement('div');
+            errDiv.style.position = 'fixed';
+            errDiv.style.top = '0';
+            errDiv.style.left = '0';
+            errDiv.style.width = '100%';
+            errDiv.style.background = 'red';
+            errDiv.style.color = 'white';
+            errDiv.style.padding = '20px';
+            errDiv.style.zIndex = '9999';
+            errDiv.style.fontFamily = 'monospace';
+            errDiv.style.whiteSpace = 'pre-wrap';
+            errDiv.innerHTML = `<h3>🚨 Lỗi JavaScript Runtime:</h3><p>${message}</p><p>Tại: ${source}:${lineno}:${colno}</p><p>Stack: ${error ? error.stack : 'N/A'}</p>`;
+            document.body.appendChild(errDiv);
+        };
+    </script>
+    <title>stem-lab - Smart Lab Management System</title>
+    <!-- Google Fonts: Outfit & Plus Jakarta Sans -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- App CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Login Screen Overlay (Modal) -->
+    <div id="login-overlay" class="login-overlay" style="display: none;">
+        <div class="login-card glass" style="position: relative;">
+            <span class="close-modal" id="close-login-modal" style="position: absolute; top: 15px; right: 20px; font-size: 24px; cursor: pointer;">&times;</span>
+            <div class="login-logo">
+                <i class="fa-solid fa-flask-vial"></i>
+            </div>
+            <h2>Đăng Nhập Quản Trị</h2>
+            <p>Dành cho Lab Assistant & Giáo viên</p>
+            
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="login-username">Tên tài khoản</label>
+                    <input type="text" id="login-username" placeholder="Nhập tài khoản (VD: troly, giaovien)" required>
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Mật khẩu</label>
+                    <input type="password" id="login-password" placeholder="Nhập mật khẩu" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block" style="margin-top: 20px; font-size: 15px; padding: 12px;"><i class="fa-solid fa-key"></i> Đăng Nhập</button>
+            </form>
+            <div class="login-footer">
+                <p>Tài khoản quản trị: troly / giaovien (Mật khẩu: 123456)</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Background Blur Decorative Gradients (Rich Blue-Black Theme) -->
+    <div class="glow-bg-1"></div>
+    <div class="glow-bg-2"></div>
+
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">
+                    <i class="fa-solid fa-flask-vial"></i>
+                </div>
+                <div class="brand-text">
+                    <h1>STEM Lab</h1>
+                    <p>Smart Lab Management System</p>
+                </div>
+            </div>
+
+            <!-- Tra Cứu Uy Tín Nhóm (Widget công cộng) -->
+            <div class="reputation-lookup-container">
+                <i class="fa-solid fa-shield-halved" style="color: var(--primary); font-size: 14px;"></i>
+                <input type="text" id="reputation-search-input" class="reputation-lookup-input" placeholder="Nhập tên nhóm tra uy tín...">
+                <button class="btn btn-primary btn-sm reputation-lookup-btn" id="btn-reputation-lookup"><i class="fa-solid fa-magnifying-glass"></i> Tra cứu</button>
+            </div>
+
+            <!-- User Profile & Login/Logout Widget -->
+            <div class="user-profile-widget" id="user-profile-widget">
+                <button class="btn btn-secondary btn-sm" id="btn-login-trigger"><i class="fa-solid fa-right-to-bracket"></i> Đăng nhập quản trị</button>
+                <div id="user-profile-info" style="display: none; align-items: center;">
+                    <span class="user-info" id="user-info"><i class="fa-solid fa-user"></i> Đang tải...</span>
+                    <button class="btn btn-secondary btn-sm" id="btn-logout" style="margin-left: 10px; padding: 4px 8px; font-size: 11px;"><i class="fa-solid fa-right-from-bracket"></i> Đăng xuất</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <main class="app-main">
+            <!-- 1. STUDENT VIEW -->
+            <section id="student-view" class="view-section active">
+                <!-- Section Header -->
+                <div class="section-header">
+                    <h2><i class="fa-regular fa-calendar-days"></i> Lịch Phòng STEM Song Song</h2>
+                    <p>Mỗi khu vực hỗ trợ tối đa 3 nhóm hoạt động song song. Chọn ngày và click vào vị trí trống (Slot 1, 2, 3) để đăng ký.</p>
+                </div>
+                
+                <!-- Calendar Filter / Actions -->
+                <div class="calendar-actions">
+                    <div class="date-selector">
+                        <button class="btn-icon" id="prev-day"><i class="fa-solid fa-chevron-left"></i></button>
+                        <input type="date" id="date-picker" class="date-picker-input">
+                        <button class="btn-icon" id="next-day"><i class="fa-solid fa-chevron-right"></i></button>
+                    </div>
+
+                </div>
+
+                <!-- Live Grid Schedule -->
+                <div class="calendar-wrapper">
+                    <div class="calendar-grid" id="calendar-grid">
+                        <!-- Rendered dynamically by js/ui.js -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- 2. LAB ASSISTANT VIEW -->
+            <section id="assistant-view" class="view-section">
+                <!-- UI for Lab Assistant -->
+                <div class="section-header">
+                    <h2><i class="fa-solid fa-list-check"></i> Phê Duyệt & Vận Hành Phòng Lab</h2>
+                    <p>Duyệt tập trung theo nhóm/khung giờ, quản lý bàn giao và báo cáo sự cố.</p>
+                </div>
+                
+                <!-- Quick On-The-Spot Booking Button -->
+                <div style="display:flex; justify-content: flex-end; margin-bottom: 10px;">
+                    <button class="btn btn-success" id="btn-quick-booking">
+                        <i class="fa-solid fa-bolt-lightning"></i> Ghi nhận mượn nóng tại phòng (Verbal Booking)
+                    </button>
+                </div>
+
+                <div id="la-dashboard-content">
+                    <!-- Rendered dynamically by js/ui.js -->
+                </div>
+            </section>
+
+            <!-- 3. TEACHER / ADMIN VIEW -->
+            <section id="teacher-view" class="view-section">
+                <!-- UI for Teacher -->
+                <div class="section-header">
+                    <h2><i class="fa-solid fa-chart-line"></i> Dashboard Giám Sát & Quản Trị Viên</h2>
+                    <p>Theo dõi hiệu suất sử dụng, quản lý kho thiết bị và hỗ trợ kỹ thuật kịp thời.</p>
+                </div>
+
+                <!-- Sub-tabs for Teacher View -->
+                <div class="sub-tabs">
+                    <button class="sub-tab-btn active" id="tab-btn-stats">📊 Thống kê & Báo cáo</button>
+                    <button class="sub-tab-btn" id="tab-btn-devices">🛠️ Quản lý kho thiết bị</button>
+                </div>
+
+                <!-- Sub-tab 1: Stats & Feedback -->
+                <div id="teacher-stats-tab" class="sub-tab-content active">
+                    <div id="teacher-dashboard-content">
+                        <!-- Rendered dynamically by js/ui.js -->
+                    </div>
+                </div>
+
+                <!-- Sub-tab 2: Device Management (Admin Panel) -->
+                <div id="teacher-devices-tab" class="sub-tab-content">
+                    <div class="dashboard-grid">
+                        <!-- Device Editor Form -->
+                        <div class="panel-card">
+                            <div class="panel-header">
+                                <h3><i class="fa-solid fa-circle-plus"></i> Thêm Thiết Bị Mới</h3>
+                            </div>
+                            <form id="device-admin-form">
+                                <div class="form-group">
+                                    <label for="admin-device-name">Tên thiết bị <span class="required">*</span></label>
+                                    <input type="text" id="admin-device-name" placeholder="Ví dụ: Máy in 3D #3, Robot V5 #4" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-device-type">Loại thiết bị <span class="required">*</span></label>
+                                    <select id="admin-device-type" class="form-control" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none;">
+                                        <option value="AI - IoT">AI - IoT</option>
+                                        <option value="Laptop">Laptop</option>
+                                        <option value="KC BOT">KC BOT</option>
+                                        <option value="Máy in 3D">Máy in 3D</option>
+                                        <option value="Snapmaker Artisan">Snapmaker Artisan</option>
+                                        <option value="Dụng cụ cầm tay">Dụng cụ cầm tay</option>
+                                        <option value="Vex IQ">Vex IQ</option>
+                                        <option value="Vex V5">Vex V5</option>
+                                        <option value="Vex AIM">Vex AIM</option>
+                                        <option value="Kính hiển vi">Kính hiển vi</option>
+                                        <option value="Bộ thí nghiệm Vật lý">Bộ thí nghiệm Vật lý</option>
+                                        <option value="Bộ thí nghiệm Hóa học">Bộ thí nghiệm Hóa học</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-device-zone">Khu vực (Zone) <span class="required">*</span></label>
+                                    <select id="admin-device-zone" class="form-control" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none;">
+                                        <option value="digital">Digital & AI Lab</option>
+                                        <option value="fablab">FabLab & Engineering</option>
+                                        <option value="robotics">Robotics Arena</option>
+                                        <option value="science">Science Discovery Lab</option>
+                                        <option value="classroom">Lớp học</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-block" style="margin-top:15px;">Thêm vào kho lưu trữ</button>
+                            </form>
+                        </div>
+                        
+                        <!-- Devices Status Table -->
+                        <div class="panel-card">
+                            <div class="panel-header">
+                                <h3><i class="fa-solid fa-warehouse"></i> Tổng Kho Thiết Bị</h3>
+                                <span class="info-badge" id="admin-total-devices-count">61 Thiết bị</span>
+                            </div>
+                            <div class="table-wrapper" style="max-height: 400px; overflow-y:auto;">
+                                <table class="custom-table" id="admin-devices-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Mã</th>
+                                            <th>Tên Thiết Bị</th>
+                                            <th>Phân loại</th>
+                                            <th>Zone</th>
+                                            <th>Trạng thái</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Rendered dynamically -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Cloud Sync Configuration -->
+                        <div class="panel-card teacher-grid-full" style="margin-top: 24px;">
+                            <div class="panel-header">
+                                <h3><i class="fa-solid fa-cloud-arrow-up"></i> Cấu Hình Vận Hành Đám Mây (Google Sheets & Telegram)</h3>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                                <div>
+                                    <h4 style="margin-bottom: 8px; color: var(--zone-blue);"><i class="fa-brands fa-google-drive"></i> Kết nối Google Sheets API</h4>
+                                    <div class="form-group">
+                                        <label for="admin-sheet-url">Google Apps Script Web App URL</label>
+                                        <input type="text" id="admin-sheet-url" placeholder="https://script.google.com/macros/s/.../exec" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none; width: 100%;">
+                                    </div>
+                                    <button type="button" class="btn btn-primary" id="btn-save-sheet-url" style="margin-top: 10px;"><i class="fa-solid fa-floppy-disk"></i> Lưu liên kết & Đồng bộ</button>
+                                </div>
+                                <div>
+                                    <h4 style="margin-bottom: 8px; color: var(--zone-yellow);"><i class="fa-solid fa-paper-plane"></i> Cấu hình Thông báo Telegram</h4>
+                                    <div class="form-group">
+                                        <label for="admin-telegram-token">Telegram Bot Token</label>
+                                        <input type="password" id="admin-telegram-token" placeholder="Nhập Bot Token của bạn" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none; width: 100%;">
+                                    </div>
+                                    <div class="form-group" style="margin-top: 8px;">
+                                        <label for="admin-telegram-chatid">Telegram Chat ID (Nhóm/Cá nhân)</label>
+                                        <input type="text" id="admin-telegram-chatid" placeholder="Nhập Chat ID nhận tin nhắn (ví dụ: -100...)" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none; width: 100%;">
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <p style="font-size: 12px; color: var(--text-secondary); margin: 0; max-width: 70%;">
+                                    <i class="fa-solid fa-circle-info"></i> Sau khi lưu cấu hình, dữ liệu sẽ được tự động đồng bộ ngầm hai chiều (Offline-First) và gửi thông báo trực tiếp về điện thoại khi có biến động.
+                                </p>
+                                <button type="button" class="btn btn-secondary" id="btn-reset-system" style="border-color: var(--zone-red); color: var(--zone-red);"><i class="fa-solid fa-trash-can"></i> Đặt Lại Dữ Liệu Gốc Toàn Hệ Thống</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- FOOTER -->
+        <footer class="app-footer">
+            <p>&copy; 2026 STEM Lab System. Developed by Antigravity AWF.</p>
+        </footer>
+    </div>
+
+    <!-- MODAL: Booking Form -->
+    <div id="booking-modal" class="modal">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-circle-plus"></i> Đăng ký mượn phòng STEM</h3>
+                <span class="close-modal" id="close-booking-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="booking-form">
+                    <input type="hidden" id="form-zone">
+                    <input type="hidden" id="form-timeslot">
+                    <input type="hidden" id="form-date">
+                    <input type="hidden" id="form-slotnumber">
+                    
+                    <div class="form-group-row">
+                        <div class="form-group">
+                            <label>Khu vực & Slot</label>
+                            <div class="info-badge" id="display-zone">Yellow Zone (Slot 1)</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Khung giờ</label>
+                            <div class="info-badge" id="display-timeslot">07:00 - 09:00</div>
+                        </div>
+                    </div>
+
+                    <div class="form-group-row">
+                        <div class="form-group">
+                            <label for="form-role-creator">Vai trò người đặt</label>
+                            <select id="form-role-creator" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none;">
+                                <option value="student" selected>🎓 Học sinh</option>
+                                <option value="teacher">👨‍🏫 Giáo viên</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="justify-content: center; align-items: flex-start; padding-top:20px;">
+                            <label class="device-checkbox-label">
+                                <input type="checkbox" id="input-is-urgent"> ⚠️ Đăng ký GẤP (< 24h)
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Urgent Reason (Hidden by default, shown via CSS class) -->
+                    <div class="form-group hidden" id="urgent-reason-group">
+                        <label for="input-urgent-reason">Giải trình lý do mượn gấp <span class="required">*</span></label>
+                        <input type="text" id="input-urgent-reason" placeholder="Nêu rõ lý do mượn khẩn cấp">
+                    </div>
+
+                    <div class="form-group-row">
+                        <div class="form-group autocomplete-container">
+                            <label for="input-team">Tên Nhóm / Tên GV <span class="required">*</span></label>
+                            <input type="text" id="input-team" placeholder="VD: VEX Team 12A1, Thầy Hùng..." required autocomplete="off">
+                            <div id="autocomplete-suggestions" class="autocomplete-dropdown hidden"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="input-representative">Người đại diện mượn <span class="required">*</span></label>
+                            <input type="text" id="input-representative" placeholder="Họ và tên người nhận phòng" required>
+                        </div>
+                    </div>
+
+                    <!-- Hộp cảnh báo uy tín nhóm -->
+                    <div id="reputation-warning-box" class="reputation-warning-container hidden"></div>
+
+                    <div class="form-group">
+                        <label>Thiết bị mượn kèm (Chọn số lượng)</label>
+                        <div class="devices-checklist" id="devices-checklist" style="max-height: 180px;">
+                            <!-- Populated dynamically with name and quantity controls -->
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="input-purpose">Mục đích sử dụng phòng <span class="required">*</span></label>
+                        <textarea id="input-purpose" rows="2" placeholder="Ghi rõ nội dung học tập, thực hành dự án" required></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" id="btn-cancel-booking">Hủy</button>
+                        <button type="submit" class="btn btn-primary">Xác nhận đăng ký</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Issue & Extension Form (Report Error / Overtime) -->
+    <div id="issue-modal" class="modal">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-triangle-exclamation"></i> Báo lỗi thiết bị hoặc Gia hạn</h3>
+                <span class="close-modal" id="close-issue-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="issue-form">
+                    <input type="hidden" id="issue-booking-id">
+                    
+                    <div style="margin-bottom: 20px; background:rgba(255,255,255,0.03); padding:10px; border-radius:8px; border:1px solid var(--border-color);">
+                        <p style="font-size:13px; color:var(--text-secondary);">Nhóm: <strong id="issue-display-team" style="color:white;"></strong></p>
+                        <p style="font-size:13px; color:var(--text-secondary);">Thiết bị mượn: <span id="issue-display-devices" style="color:var(--zone-yellow);"></span></p>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Lựa chọn thao tác:</label>
+                        <div style="display:flex; gap:16px; margin-top:5px;">
+                            <label class="device-checkbox-label">
+                                <input type="radio" name="issue-action" value="report-error" checked> 🛠️ Báo lỗi thiết bị / dự án
+                            </label>
+                            <label class="device-checkbox-label">
+                                <input type="radio" name="issue-action" value="extend"> ⏳ Xin gia hạn làm thêm giờ
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Error section -->
+                    <div id="issue-error-section" class="form-group">
+                        <label for="input-issue-type">Loại sự cố</label>
+                        <select id="input-issue-type" style="background:#0a0f1d; border:1px solid var(--border-color); color:white; padding:10px; border-radius:8px; outline:none; margin-bottom:12px;">
+                            <option value="device">Lỗi hỏng hóc thiết bị</option>
+                            <option value="project">Lỗi kỹ thuật dự án (Cần GV hỗ trợ)</option>
+                        </select>
+                        
+                        <label for="input-issue-desc">Mô tả chi tiết lỗi <span class="required">*</span></label>
+                        <textarea id="input-issue-desc" rows="3" placeholder="Nhập chi tiết bộ phận thiết bị bị hỏng hoặc lỗi dự án để Giáo viên kịp thời hỗ trợ"></textarea>
+                    </div>
+
+                    <!-- Extension section -->
+                    <div id="issue-extend-section" class="form-group hidden" style="background: rgba(6, 182, 212, 0.08); padding: 12px; border-radius: 8px; border: 1px solid rgba(6, 182, 212, 0.2);">
+                        <p style="font-size: 13px; color: var(--text-primary);">
+                            <i class="fa-solid fa-info-circle"></i> Trạng thái ca học sẽ được chuyển sang <strong>Gia hạn sử dụng (Overtime)</strong>. Học sinh tiếp tục sử dụng phòng/thiết bị tại chỗ.
+                        </p>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary btn-block">Xác nhận gửi yêu cầu</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Teacher Evaluation Form -->
+    <div id="evaluation-modal" class="modal">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-user-check"></i> Đánh giá năng lực nhóm thực hành</h3>
+                <span class="close-modal" id="close-evaluation-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="evaluation-form">
+                    <input type="hidden" id="eval-booking-id">
+                    
+                    <div style="margin-bottom: 20px; background:rgba(255,255,255,0.03); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
+                        <p style="font-size:13px; color:var(--text-secondary);">Nhóm: <strong id="eval-display-team" style="color:white;"></strong></p>
+                        <p style="font-size:13px; color:var(--text-secondary);">Mục đích: <span id="eval-display-purpose" style="color:white;"></span></p>
+                    </div>
+
+                    <div class="form-group text-center">
+                        <label style="margin-bottom: 12px; display:block;">Xếp loại kết quả thực hành</label>
+                        <div class="evaluation-buttons-container" style="display:flex; justify-content: center; gap: 12px;">
+                            <button type="button" class="btn btn-success eval-btn" data-value="tốt"><i class="fa-solid fa-award"></i> Tốt</button>
+                            <button type="button" class="btn btn-secondary eval-btn" data-value="đạt"><i class="fa-solid fa-thumbs-up"></i> Đạt</button>
+                            <button type="button" class="btn btn-danger eval-btn" data-value="chưa đạt"><i class="fa-solid fa-circle-exclamation"></i> Chưa Đạt</button>
+                        </div>
+                        <input type="hidden" id="input-rating" value="đạt"> <!-- Note: input-rating holds evaluated status: tốt/đạt/chưa đạt -->
+                    </div>
+
+                    <div class="form-group" style="margin-top:16px;">
+                        <label for="input-review">Nhận xét của Giáo viên <span class="required">*</span></label>
+                        <textarea id="input-review" rows="3" placeholder="Nhập nhận xét chi tiết về tinh thần làm việc, ý thức bảo quản thiết bị..." required></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary btn-block">Gửi đánh giá xếp loại</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- Application Script Files -->
+    <script src="js/storage.js"></script>
+    <script src="js/controller.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
