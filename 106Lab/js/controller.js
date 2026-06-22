@@ -1,0 +1,498 @@
+/**
+ * ⚡ BUSINESS LOGIC ENGINE: stem-lab Controller
+ */
+
+// Helper to get ISO week number from a date string (YYYY-MM-DD)
+function getWeekNumber(dateString) {
+    const date = new Date(dateString);
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7);
+    const week1 = new Date(date.getFullYear(), 0, 4);
+    return 1 + Math.round(((date.getTime() - week1.getTime()) / 86400000
+                          - 3 + (week1.getDay() + 6) % 7) / 7);
+}
+
+function getWeekYear(dateString) {
+    const date = new Date(dateString);
+    date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7);
+    return date.getFullYear();
+}
+
+const StemLabAPI = {
+    // 1. Auto-reject expired bookings
+    autoRejectExpiredBookings() {
+        const bookings = StorageEngine.getBookings();
+        const todayStr = new Date().toISOString().split('T')[0];
+        let updated = false;
+
+        bookings.forEach(b => {
+            if (b.status === 'pending' && b.date < todayStr) {
+                b.status = 'rejected';
+                b.review = 'Hệ thống tự động từ chối do quá hạn duyệt.';
+                updated = true;
+            }
+        });
+
+        if (updated) {
+            StorageEngine.saveBookings(bookings);
+            console.log('🧹 Expired bookings clean-up complete.');
+        }
+    },
+
+    // 2. Calculate Available Devices dynamically for a specific slot
+    getAvailableDevicesCount(date, timeSlot) {
+        const allDevices = StorageEngine.getDevices();
+        const bookings = StorageEngine.getBookings().filter(b => 
+            b.date === date && 
+            b.time_slot === timeSlot && 
+            b.status !== 'rejected'
+        );
+
+        // Map of device name to type
+        const deviceMap = {};
+        allDevices.forEach(d => {
+            deviceMap[d.name] = d.type;
+        });
+
+        // Initialize counts
+        const stats = {};
+        allDevices.forEach(d => {
+            if (!stats[d.type]) {
+                stats[d.type] = { total: 0, busy: 0, available: 0, items: [] };
+            }
+            stats[d.type].total++;
+            stats[d.type].items.push(d.name);
+        });
+
+        // Count busy devices from active bookings
+        bookings.forEach(b => {
+            b.devices.forEach(deviceName => {
+                const type = deviceMap[deviceName];
+                if (type && stats[type]) {
+                    stats[type].busy++;
+                }
+            });
+        });
+
+        // Calculate available count
+        Object.keys(stats).forEach(type => {
+            stats[type].available = stats[type].total - stats[type].busy;
+        });
+
+        return stats;
+    },
+
+    // 3. Validation Logic
+    validateBooking(newBooking) {
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        // --- RULE 0: Reputation Point check (Kiểm tra điểm uy tín) ---
+        const teamReputation = StorageEngine.getTeamReputation(newBooking.team_name);
+        if (teamReputation === 0) {
+            const allBookings = StorageEngine.getBookings();
+            const lastFailedBooking = allBookings
+                .filter(b => b.team_name.trim().toLowerCase() === newBooking.team_name.trim().toLowerCase() && 
+                             b.teacher_evaluation && 
+                             (b.teacher_evaluation.status === 'chưa đạt' || b.teacher_evaluation.status === 'failed'))
+                .sort((a, b) => new Date(b.teacher_evaluation.evaluated_at) - new Date(a.teacher_evaluation.evaluated_at))[0];
+
+            let failReason = "Không có lý do cụ thể";
+            if (lastFailedBooking && lastFailedBooking.teacher_evaluation.notes) {
+                failReason = lastFailedBooking.teacher_evaluation.notes;
+            }
+
+            return {
+                valid: false,
+                message: `Nhóm "${newBooking.team_name}" đã bị KHÓA đăng ký do điểm uy tín về 0!\nLý do vi phạm gần nhất: "${failReason}".\nVui lòng liên hệ Giáo viên/Trợ lý để được xử lý.`
+            };
+        }
+
+        // --- RULE 1: Past Dates Block (Khóa lịch quá khứ) ---
+        if (newBooking.date < todayStr) {
+            return { valid: false, message: 'Không thể tác động hoặc đăng ký lịch trong quá khứ!' };
+        }
+
+        // --- RULE 2: FabLab Zone Student Block (Khóa khu chế tạo) ---
+        if (newBooking.zone === 'fablab' && newBooking.role_creator === 'student') {
+            return { 
+                valid: false, 
+                message: 'Khu vực FabLab & Chế tạo không hỗ trợ đăng ký trực tuyến cho học sinh (cần dùng thẻ vật lý và có giáo viên giám sát trực tiếp)!' 
+            };
+        }
+
+        const bookings = StorageEngine.getBookings();
+
+        // --- RULE 3: Slot-specific Double Booking (Trùng slot song song) ---
+        const doubleBooking = bookings.find(b => 
+            b.zone === newBooking.zone &&
+            b.date === newBooking.date &&
+            b.time_slot === newBooking.time_slot &&
+            b.slot_number === newBooking.slot_number &&
+            b.status !== 'rejected' &&
+            b.id !== newBooking.id
+        );
+
+        if (doubleBooking) {
+            return {
+                valid: false,
+                message: `Vị trí Slot ${newBooking.slot_number} tại khung giờ này đã bị đăng ký bởi nhóm "${doubleBooking.team_name}"!`
+            };
+        }
+
+        // --- RULE 4: 24h Advance Warning & Urgent check ---
+        const slotStartHour = newBooking.time_slot.split('-')[0];
+        const reservationTime = new Date(`${newBooking.date}T${slotStartHour}:00`);
+        const timeDiffHours = (reservationTime - new Date()) / (1000 * 60 * 60);
+
+        if (timeDiffHours < 24 && newBooking.role_creator === 'student') {
+            if (!newBooking.is_urgent) {
+                return {
+                    valid: false,
+                    message: 'Đăng ký phải thực hiện trước 24 giờ để duyệt. Vui lòng tích chọn mục "Đăng ký GẤP" và giải trình lý do cấp bách để gửi!'
+                };
+            }
+            if (!newBooking.urgent_reason || newBooking.urgent_reason.trim() === '') {
+                return {
+                    valid: false,
+                    message: 'Vui lòng nhập lý do giải trình cho yêu cầu mượn GẤP!'
+                };
+            }
+        }
+
+        // --- RULE 5: Quota limit (Only for Students, Teachers bypass) ---
+        if (newBooking.role_creator === 'student') {
+            const newBookingWeek = getWeekNumber(newBooking.date);
+            const newBookingYear = getWeekYear(newBooking.date);
+            
+            const activeTeamBookingsInWeek = bookings.filter(b => {
+                if (b.status === 'rejected') return false;
+                if (b.id === newBooking.id) return false;
+                
+                const bWeek = getWeekNumber(b.date);
+                const bYear = getWeekYear(b.date);
+                
+                return b.team_name.toLowerCase().trim() === newBooking.team_name.toLowerCase().trim() &&
+                       bWeek === newBookingWeek &&
+                       bYear === newBookingYear;
+            });
+
+            if (activeTeamBookingsInWeek.length >= 3) {
+                return {
+                    valid: false,
+                    message: `Nhóm "${newBooking.team_name}" đã sử dụng hết định mức đặt lịch trong tuần này (Đã đặt ${activeTeamBookingsInWeek.length} ca, tối đa 3 ca/tuần)!`
+                };
+            }
+        }
+
+        // --- RULE 6: Device availability check ---
+        const availableStats = this.getAvailableDevicesCount(newBooking.date, newBooking.time_slot);
+        let deviceError = null;
+
+        Object.entries(newBooking.device_requests).forEach(([type, qtyRequested]) => {
+            if (qtyRequested > 0) {
+                const availableCount = availableStats[type] ? availableStats[type].available : 0;
+                if (qtyRequested > availableCount) {
+                    deviceError = `Thiết bị "${type}" hiện chỉ còn trống ${availableCount} bộ trong khung giờ này, không đủ đáp ứng số lượng ${qtyRequested} bộ yêu cầu!`;
+                }
+            }
+        });
+
+        if (deviceError) {
+            return { valid: false, message: deviceError };
+        }
+
+        return { valid: true };
+    },
+
+    // 4. CRUD operations
+    createBooking(bookingData) {
+        const bookings = StorageEngine.getBookings();
+        
+        // Base struct
+        const newBooking = {
+            id: 'book_' + Date.now(),
+            team_name: bookingData.team_name.trim(),
+            representative: bookingData.representative.trim(),
+            zone: bookingData.zone,
+            date: bookingData.date,
+            time_slot: bookingData.time_slot,
+            slot_number: parseInt(bookingData.slot_number),
+            device_requests: bookingData.device_requests || {},
+            devices: [], // Assigned item names will go here
+            purpose: bookingData.purpose.trim(),
+            status: bookingData.role_creator === 'teacher' ? 'approved' : 'pending', // Teachers auto-approved
+            role_creator: bookingData.role_creator || 'student',
+            is_urgent: !!bookingData.is_urgent,
+            urgent_reason: (bookingData.urgent_reason || '').trim(),
+            is_overtime: false,
+            error_report: null,
+            teacher_evaluation: null,
+            created_at: new Date().toISOString(),
+            rating: null,
+            review: ''
+        };
+
+        // Validate
+        const validation = this.validateBooking(newBooking);
+        if (!validation.valid) {
+            return { success: false, message: validation.message };
+        }
+
+        // Allocate specific device serial names
+        const availableStats = this.getAvailableDevicesCount(newBooking.date, newBooking.time_slot);
+        const allocatedDeviceNames = [];
+
+        Object.entries(newBooking.device_requests).forEach(([type, qtyRequested]) => {
+            if (qtyRequested > 0 && availableStats[type]) {
+                // Find all items of this type currently busy in this slot
+                const busyInSlot = [];
+                bookings.forEach(b => {
+                    if (b.date === newBooking.date && b.time_slot === newBooking.time_slot && b.status !== 'rejected') {
+                        b.devices.forEach(dName => {
+                            busyInSlot.push(dName);
+                        });
+                    }
+                });
+
+                // Pick first available items
+                let count = 0;
+                availableStats[type].items.forEach(itemName => {
+                    if (count < qtyRequested && !busyInSlot.includes(itemName)) {
+                        allocatedDeviceNames.push(itemName);
+                        count++;
+                    }
+                });
+            }
+        });
+
+        newBooking.devices = allocatedDeviceNames;
+
+        bookings.push(newBooking);
+
+        // Tạo tin nhắn Telegram báo đăng ký mới
+        const zoneName = ZONES[newBooking.zone] ? ZONES[newBooking.zone].name : newBooking.zone;
+        let notifyMessage = `➕ <b>ĐĂNG KÝ PHÒNG STEM MỚI!</b>\n` +
+            `- <b>Nhóm/Người đăng ký:</b> ${newBooking.team_name}\n` +
+            `- <b>Người đại diện:</b> ${newBooking.representative}\n` +
+            `- <b>Khu vực:</b> ${zoneName} (Slot ${newBooking.slot_number})\n` +
+            `- <b>Ngày đặt:</b> ${newBooking.date} (${newBooking.time_slot})\n` +
+            `- <b>Thiết bị mượn kèm:</b> ${newBooking.devices.join(', ') || 'Không mượn'}\n` +
+            `- <b>Mục đích:</b> ${newBooking.purpose}\n` +
+            `- <b>Trạng thái:</b> ${newBooking.status === 'approved' ? '🟢 Đã duyệt tự động (GV)' : '⏳ Chờ trợ lý duyệt'}`;
+            
+        if (newBooking.is_urgent) {
+            notifyMessage = `⚠️ 🔥 <b>[ĐĂNG KÝ GẤP &lt; 24h] PHÒNG STEM!</b>\n` +
+                `- <b>Nhóm/Người đăng ký:</b> ${newBooking.team_name}\n` +
+                `- <b>Người đại diện:</b> ${newBooking.representative}\n` +
+                `- <b>Khu vực:</b> ${zoneName} (Slot ${newBooking.slot_number})\n` +
+                `- <b>Ngày đặt:</b> ${newBooking.date} (${newBooking.time_slot})\n` +
+                `- <b>Lý do khẩn cấp:</b> <i>${newBooking.urgent_reason}</i>\n` +
+                `- <b>Mục đích:</b> ${newBooking.purpose}\n` +
+                `- <b>Trạng thái:</b> ⏳ Chờ trợ lý duyệt gấp`;
+        }
+
+        const saved = StorageEngine.saveBookings(bookings, notifyMessage);
+        
+        return { success: saved, booking: newBooking };
+    },
+
+    updateBookingStatus(id, newStatus) {
+        const bookings = StorageEngine.getBookings();
+        const index = bookings.findIndex(b => b.id === id);
+        
+        if (index === -1) {
+            return { success: false, message: 'Không tìm thấy thông tin đăng ký!' };
+        }
+
+        bookings[index].status = newStatus;
+        
+        // Update device status globally
+        const devices = StorageEngine.getDevices();
+        const bookingDevices = bookings[index].devices;
+        
+        if (newStatus === 'in_use') {
+            devices.forEach(d => {
+                if (bookingDevices.includes(d.name)) {
+                    d.status = 'in_use';
+                }
+            });
+        } else if (newStatus === 'completed' || newStatus === 'rejected') {
+            devices.forEach(d => {
+                if (bookingDevices.includes(d.name)) {
+                    d.status = 'available';
+                }
+            });
+        }
+
+        StorageEngine.saveDevices(devices);
+
+        let statusText = '';
+        if (newStatus === 'approved') statusText = '🟢 Đã phê duyệt';
+        else if (newStatus === 'rejected') statusText = '🔴 Đã từ chối';
+        else if (newStatus === 'in_use') statusText = '🔵 Đã bàn giao & bắt đầu sử dụng';
+        else if (newStatus === 'completed') statusText = '⚪ Đã hoàn thành ca thực hành';
+        
+        const zoneName = ZONES[bookings[index].zone] ? ZONES[bookings[index].zone].name : bookings[index].zone;
+        const notifyMessage = `📢 <b>CẬP NHẬT TRẠNG THÁI CA HỌC!</b>\n` +
+            `- <b>Nhóm:</b> ${bookings[index].team_name}\n` +
+            `- <b>Khu vực:</b> ${zoneName} (Slot ${bookings[index].slot_number})\n` +
+            `- <b>Ngày:</b> ${bookings[index].date} (${bookings[index].time_slot})\n` +
+            `- <b>Trạng thái mới:</b> <b>${statusText}</b>`;
+
+        const saved = StorageEngine.saveBookings(bookings, notifyMessage);
+        
+        return { success: saved, booking: bookings[index] };
+    },
+
+    // Report Error or Project Overtime status
+    reportIssue(id, issueType, description) {
+        const bookings = StorageEngine.getBookings();
+        const index = bookings.findIndex(b => b.id === id);
+        
+        if (index === -1) {
+            return { success: false, message: 'Không tìm thấy ca học!' };
+        }
+
+        bookings[index].error_report = {
+            type: issueType, // 'device' or 'project'
+            description: description.trim(),
+            reported_at: new Date().toISOString()
+        };
+
+        const typeText = issueType === 'device' ? '🛠️ Hỏng thiết bị' : '💻 Lỗi kỹ thuật dự án (Cần GV hỗ trợ)';
+        const zoneName = ZONES[bookings[index].zone] ? ZONES[bookings[index].zone].name : bookings[index].zone;
+        const notifyMessage = `🚨 ⚠️ <b>BÁO CÁO SỰ CỐ KHẨN CẤP PHÒNG LAB!</b>\n` +
+            `- <b>Nhóm báo cáo:</b> ${bookings[index].team_name}\n` +
+            `- <b>Khu vực:</b> ${zoneName} (Slot ${bookings[index].slot_number})\n` +
+            `- <b>Loại sự cố:</b> ${typeText}\n` +
+            `- <b>Mô tả chi tiết:</b> <i>${description}</i>`;
+
+        const saved = StorageEngine.saveBookings(bookings, notifyMessage);
+        return { success: saved, booking: bookings[index] };
+    },
+
+    extendBooking(id) {
+        const bookings = StorageEngine.getBookings();
+        const index = bookings.findIndex(b => b.id === id);
+        
+        if (index === -1) {
+            return { success: false, message: 'Không tìm thấy ca học!' };
+        }
+
+        bookings[index].is_overtime = true;
+
+        const zoneName = ZONES[bookings[index].zone] ? ZONES[bookings[index].zone].name : bookings[index].zone;
+        const notifyMessage = `⏳ <b>Gia hạn ca học (Overtime)!</b>\n` +
+            `- <b>Nhóm gia hạn:</b> ${bookings[index].team_name}\n` +
+            `- <b>Khu vực:</b> ${zoneName} (Slot ${bookings[index].slot_number})\n` +
+            `- <b>Thời gian:</b> ${bookings[index].date} (${bookings[index].time_slot})\n` +
+            `- <b>Trạng thái:</b> Ca học đã chuyển sang chế độ làm thêm giờ (Overtime).`;
+
+        const saved = StorageEngine.saveBookings(bookings, notifyMessage);
+        return { success: saved, booking: bookings[index] };
+    },
+
+    // Teacher Evaluation for Group
+    submitTeacherEvaluation(id, status, notes) {
+        const bookings = StorageEngine.getBookings();
+        const index = bookings.findIndex(b => b.id === id);
+        
+        if (index === -1) {
+            return { success: false, message: 'Không tìm thấy ca học!' };
+        }
+
+        const teamName = bookings[index].team_name;
+        const normalizedStatus = status.trim().toLowerCase(); // 'tốt' | 'đạt' | 'chưa đạt'
+
+        if (normalizedStatus === 'chưa đạt' && (!notes || notes.trim() === '')) {
+            return { success: false, message: 'Bắt buộc phải nhập nhận xét lý do khi đánh giá Chưa đạt!' };
+        }
+
+        bookings[index].teacher_evaluation = {
+            status: normalizedStatus,
+            notes: notes.trim(),
+            evaluated_at: new Date().toISOString()
+        };
+
+        // Update team reputation score
+        let currentScore = StorageEngine.getTeamReputation(teamName);
+        let newScore = currentScore;
+
+        if (normalizedStatus === 'chưa đạt') {
+            newScore = Math.max(0, currentScore - 30);
+        } else if (normalizedStatus === 'tốt') {
+            newScore = Math.min(100, currentScore + 10);
+        }
+
+        StorageEngine.setTeamReputation(teamName, newScore);
+
+        let evalBadge = '';
+        if (normalizedStatus === 'tốt') evalBadge = '🏆 Tốt (+10đ Uy tín)';
+        else if (normalizedStatus === 'đạt') evalBadge = '👍 Đạt (Giữ nguyên điểm)';
+        else evalBadge = '⚠️ Chưa đạt (-30đ Uy tín)';
+
+        const zoneName = ZONES[bookings[index].zone] ? ZONES[bookings[index].zone].name : bookings[index].zone;
+        let notifyMessage = `👨‍🏫 <b>GIÁO VIÊN ĐÁNH GIÁ NĂNG LỰC NHÓM!</b>\n` +
+            `- <b>Nhóm:</b> ${teamName} (Uy tín mới: <b>${newScore}/100</b>)\n` +
+            `- <b>Khu vực:</b> ${zoneName} (Slot ${bookings[index].slot_number})\n` +
+            `- <b>Xếp loại kết quả:</b> <b>${evalBadge}</b>\n` +
+            `- <b>Nhận xét của GV:</b> <i>"${notes}"</i>`;
+
+        if (newScore === 0) {
+            notifyMessage += `\n🚨 <b>CẢNH BÁO:</b> Nhóm ${teamName} đã bị <b>KHÓA ĐẶT LỊCH</b> do điểm uy tín về 0!`;
+        }
+
+        const saved = StorageEngine.saveBookings(bookings, notifyMessage);
+        return { success: saved, booking: bookings[index] };
+    },
+
+    // 5. Stats and Reports Calculation
+    getWeeklyFrequencyData() {
+        const bookings = StorageEngine.getBookings();
+        const weekDays = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+        const frequencies = [0, 0, 0, 0, 0, 0, 0];
+
+        bookings.forEach(b => {
+            if (b.status === 'rejected') return;
+            const bDate = new Date(b.date);
+            let dayIndex = bDate.getDay() - 1; // Mon = 0, Sun = 6
+            if (dayIndex === -1) dayIndex = 6;
+            
+            if (dayIndex >= 0 && dayIndex < 7) {
+                frequencies[dayIndex]++;
+            }
+        });
+
+        return { labels: weekDays, data: frequencies };
+    },
+
+    getZoneDistributionData() {
+        const bookings = StorageEngine.getBookings().filter(b => b.status !== 'rejected');
+        const zones = { digital: 0, fablab: 0, robotics: 0, science: 0, classroom: 0 };
+        
+        bookings.forEach(b => {
+            if (zones[b.zone] !== undefined) {
+                zones[b.zone]++;
+            }
+        });
+
+        return {
+            labels: ['Digital & AI', 'FabLab & Eng', 'Robotics Arena', 'Science Discovery', 'Lớp học'],
+            data: [zones.digital, zones.fablab, zones.robotics, zones.science, zones.classroom]
+        };
+    },
+
+    getTopTeamsData() {
+        const bookings = StorageEngine.getBookings().filter(b => b.status !== 'rejected');
+        const teamCounts = {};
+
+        bookings.forEach(b => {
+            teamCounts[b.team_name] = (teamCounts[b.team_name] || 0) + 1;
+        });
+
+        return Object.entries(teamCounts)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+    }
+};
